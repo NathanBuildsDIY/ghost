@@ -29,7 +29,7 @@ pip install soundfile
 
 
 echo "create entry in crontab to always run weeder app on startup"
-line="@reboot source ~/ghost/venv/bin/activate; python3 ~/ghost/casper.py >> ~/ghost/log.out 2>&1"
+line="@reboot ~/ghost/venv/bin/python ~/ghost/casper.py >> ~/ghost/log.out 2>&1"
 (crontab -u $(whoami) -l; echo "$line" ) | crontab -u $(whoami) -
 python3 casper.py
 

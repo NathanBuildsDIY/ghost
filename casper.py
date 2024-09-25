@@ -44,22 +44,23 @@ from threading import Thread
 import threading
 from gpiozero import PWMLED, DistanceSensor, AngularServo
 import time
-
-#TO DO - light up mouth. Light up eyes (intensity w question?). Move arms. Print case. 
-#future - ollama/ai accelerator?
+from pathlib import Path
+#future - ollama/ai accelerator?  Add back in arms - they suck too much power for now but separate supply would be fine
 
 #declare things to be later used
 #vosk
 q = queue.Queue()
 #piper
-model = "/home/gibby/ghost/en_US-lessac-medium.onnx"
+p = Path('~').expanduser()
+model = str(p)+"/ghost/en_US-lessac-medium.onnx"
 voice=PiperVoice.load(model)
 #control flags
 questionReceived = False
 answerReceived = False
 responseRead = True
 someonePresent = False
-workingdir = "/home/gibby/ghost/"
+workingdir = str(p)+"/ghost/"
+os.chdir(workingdir)
 #LEDs
 mouth = PWMLED(21) #mouth.value = 0
 eyeL1 = PWMLED(7)
@@ -76,7 +77,7 @@ def earQuestion():
   #adapted from https://github.com/alphacep/vosk-api/python/example/test_microphone.py
   #transcribes audio continually, breaking on silence (sentence) boundaries. Looks for a question starting with hey casper
   global questionReceived, answerReceived, responseRead, someonePresent
-  device=1 #usb mic
+  device=0 #usb mic
   dump_fn = None
   try:
     device_info = sd.query_devices(device, "input")
@@ -103,7 +104,7 @@ def earQuestion():
             phrasetext = phrasetext.replace("he casper","")
             print("we have a valid question, logging it. Question is:", phrasetext)
 			#valid question asked - save it out for reference
-            f = open("question.txt", "w")
+            f = open(workingdir+"question.txt", "w")
             f.write(phrasetext)
             f.close()
             questionReceived = True
@@ -130,11 +131,11 @@ def brainAnswer():
   #ask a large language model the question received. Currently using gemini, could use local LLM like llama3 but it's slow w/o accelerator
   global questionReceived, answerReceived, responseRead
   #read the saved question
-  f = open("/home/gibby/ghost/question.txt",'r')
+  f = open(str(p)+"/ghost/question.txt",'r')
   questiontext = f.read()
   f.close()
 
-  f = open("/home/gibby/ghost/apikey.txt",'r')
+  f = open(str(p)+"/ghost/apikey.txt",'r')
   apikey = f.read()
   f.close()
   
@@ -145,10 +146,10 @@ def brainAnswer():
   payload = {'contents':[{'parts':[{'text': apiquestiontext }]}]}
   res = requests.post(url, json=payload)
   resjson = json.loads(res.text)
-  with open("/home/gibby/ghost/answer.txt", "w", encoding="utf-8") as f:
+  with open(str(p)+"/ghost/answer.txt", "w", encoding="utf-8") as f:
     f.write(resjson["candidates"][0]["content"]["parts"][0]['text'])
   #log the answer
-  f = open("/home/gibby/ghost/answer.txt",'r')
+  f = open(str(p)+"/ghost/answer.txt",'r')
   answertext = f.read()
   f.close()
   answertext = answertext.encode("ascii", "ignore") #get rid of all the emojis etc that we can't print
@@ -159,7 +160,7 @@ def voiceAnswer():
   #user piper TTS to turn answer into audio. It's a ghost so make the voice spooky with reverb & tritones above/below
   global questionReceived, answerReceived, responseRead
   responseRead = False
-  f = open("/home/gibby/ghost/answer.txt",'r')
+  f = open(str(p)+"/ghost/answer.txt",'r')
   answer = f.read()
   answer = answer.replace("*","") #asterisks show up in responses and the reader pronounces them instead of emphasizing. So, remove
   answer = answer.replace("Spooky laughter","Ha Ha Ha He Ho,") #don't say "spooky laughter!"
@@ -179,19 +180,19 @@ def voiceAnswer():
   #add reverb
   fx = (AudioEffectsChain().reverb().phaser()) #removed .delay() from chain
   infile = str(text[2]+text[0])
-  outfile = 'reverb.wav'
+  outfile = workingdir+'reverb.wav'
   fx(infile, outfile)
   #shift pitch up and down
-  y, sr = librosa.load(text[2]+text[0])
+  y, sr = librosa.load(workingdir+text[2]+text[0])
   y_tritoneup = librosa.effects.pitch_shift(y, sr=sr, n_steps=6) # shifted by 6 half steps
-  sf.write('up.wav', y_tritoneup, sr, subtype='PCM_24')
+  sf.write(workingdir+'up.wav', y_tritoneup, sr, subtype='PCM_24')
   y_tritonedown = librosa.effects.pitch_shift(y, sr=sr, n_steps=-6) # shifted down tritone
-  sf.write('down.wav', y_tritonedown, sr, subtype='PCM_24')
+  sf.write(workingdir+'down.wav', y_tritonedown, sr, subtype='PCM_24')
   #add fade to shift up and down, then mix all together
-  regular = AudioSegment.from_file(text[2]+text[0], format="wav")
+  regular = AudioSegment.from_file(workingdir+text[2]+text[0], format="wav")
   regular_reverb = AudioSegment.from_file('reverb.wav', format="wav")
-  regular_up = AudioSegment.from_file('up.wav', format="wav")
-  regular_down = AudioSegment.from_file('down.wav', format="wav")
+  regular_up = AudioSegment.from_file(workingdir+'/up.wav', format="wav")
+  regular_down = AudioSegment.from_file(workingdir+'/down.wav', format="wav")
   #fade first
   seconds = 0
   regular_upfade = regular_up[0:10]
@@ -207,18 +208,7 @@ def voiceAnswer():
     seconds = seconds + 3
   #now mix
   overlay_words = regular_reverb.overlay(regular, position=0).overlay(regular_upfade, position=0).overlay(regular_downfade, position = 0)
-  '''
-  #add background music while talking
-  random_file = random.choice(os.listdir(workingdir+'music/')) #get a random background song
-  music = AudioSegment.from_file('music/'+random_file, format="wav")
-  random_file = random.choice(os.listdir(workingdir+'music/')) #get a random background song
-  music2 = AudioSegment.from_file('music/'+random_file, format="wav")
-  music = music + music2
-  background_music = music[0:500].fade_in(500) + music[500:500+overlay_words.duration_seconds*1000]
-  background_music = background_music + music[500+overlay_words.duration_seconds*1000:1000+overlay_words.duration_seconds*1000].fade_out(500)
-  overlay_wordsmusic = background_music.overlay(overlay_words, position=500)
-  overlay_wordsmusic.export(text[2]+text[0], format="wav") 
-  '''
+  #overlay_words = regular.overlay(regular_upfade, position=0).overlay(regular_downfade, position = 0)
   overlay_words.export(text[2]+text[0], format="wav") 
   questionReceived = False
   answerReceived = False
@@ -231,13 +221,13 @@ def callbackVosk(indata, frames, time, status):
 def playStallResponse():
   #it takes time to create the audio for the answer (2-10 seconds), so say some stall words/play music
   random_file = random.choice(os.listdir(workingdir+'stall/')) #get a random background song
-  stallAudio = AudioSegment.from_file('stall/'+random_file, format="wav")
+  stallAudio = AudioSegment.from_file(workingdir+'stall/'+random_file, format="wav")
   playAudioWithMouth(stallAudio)
 def playMusic():
   while questionReceived == True:
     #play music while we process question
     random_file = random.choice(os.listdir(workingdir+'music/')) #get a random background song
-    stallMusic = AudioSegment.from_file('music/'+random_file, format="wav")
+    stallMusic = AudioSegment.from_file(workingdir+'music/'+random_file, format="wav")
     play(stallMusic)
 def playAudioWithMouth(segment):
   #helper to light up mouth on one thread while playing audio on another
@@ -305,7 +295,7 @@ def main():
         someonePresent = True #distance sensor sees something close by
         #say hello
         random_file = random.choice(os.listdir(workingdir+'greet/')) #get a random greeting
-        greetingAudio = AudioSegment.from_file('greet/'+random_file, format="wav")
+        greetingAudio = AudioSegment.from_file(workingdir+'greet/'+random_file, format="wav")
         playAudioWithMouth(greetingAudio)
         while someonePresent == True:
           if questionReceived == False and answerReceived == False and responseRead == True:
@@ -334,7 +324,7 @@ def main():
             someonePresent = False
         #just detected someonePresent == False, say goodbye
         random_file = random.choice(os.listdir(workingdir+'bye/')) #get a random background song
-        byeAudio = AudioSegment.from_file('bye/'+random_file, format="wav")
+        byeAudio = AudioSegment.from_file(workingdir+'bye/'+random_file, format="wav")
         playAudioWithMouth(byeAudio)
   except KeyboardInterrupt:
     print("\nLeaving program")
