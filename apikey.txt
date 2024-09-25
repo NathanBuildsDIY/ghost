@@ -1,0 +1,1 @@
+Replace this text with your apikey from google to access gemini.
