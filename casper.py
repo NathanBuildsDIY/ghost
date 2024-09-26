@@ -23,6 +23,7 @@
 #pip install soundfile
 
 #alsamixer - up to 95%
+#this is a mess  /usr/share/alsa/alsa.conf, try sounddevice to stay away from it
 
 import os, sys, random
 import datetime
@@ -73,23 +74,38 @@ humanPresence = DistanceSensor(echo=4, trigger=2, max_distance=3.0) #read - int(
 #leftArm = AngularServo(14, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=6/10000, max_pulse_width=26/10000) #leftArm.angle = 0
 #rightArm = AngularServo(18, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=6/10000, max_pulse_width=26/10000)
 
+#get USB mic device number
+mic_device = 0
+speaker_device = 0
+for index in range(3):
+  device_info = sd.query_devices(index)
+  devicename = device_info["name"]
+  if "USB PnP Sound Device" in devicename:
+    print("Found the microphone at index:",index)
+    mic_device = index
+  if "USB Audio" in devicename:
+    print("Found the USB speaker at index:",index)
+    speaker_device=index
+
 def earQuestion():
   #adapted from https://github.com/alphacep/vosk-api/python/example/test_microphone.py
   #transcribes audio continually, breaking on silence (sentence) boundaries. Looks for a question starting with hey casper
   global questionReceived, answerReceived, responseRead, someonePresent
-  device=0 #usb mic
   dump_fn = None
   try:
-    device_info = sd.query_devices(device, "input")
+    device_info = sd.query_devices(mic_device, "input")
+    print("starting vosk with device info:",device_info)
     # soundfile expects an int, sounddevice provides a float:
     samplerate = int(device_info["default_samplerate"])
     model = Model(lang="en-us")
     listen_thread = threading.Thread(target=eyeControl, args=("listen",)) #start thread to light up mouth LED
     listen_thread.start()
     heyCasperFound = False
-    with sd.RawInputStream(samplerate=samplerate, blocksize = 8000, device=device, dtype="int16", channels=1, callback=callbackVosk):
+    with sd.RawInputStream(samplerate=samplerate, blocksize = 8000, device=mic_device, dtype="int16", channels=1, callback=callbackVosk):
       rec = KaldiRecognizer(model, samplerate)
       while questionReceived == False and someonePresent == True:
+        #if int(humanPresence.distance*100) > 170:
+        #  someonePresent = False
         data = q.get()
         if rec.AcceptWaveform(data):
           phrase = rec.Result()
@@ -97,13 +113,13 @@ def earQuestion():
           phrasejson = json.loads(phrase)
           phrasetext = phrasejson["text"]
           if phrasetext.startswith("hey casper") or phrasetext.startswith("who casper") or phrasetext.startswith("her casper") or phrasetext.startswith("he casper"):
-			#remove Hey Casper
+			      #remove Hey Casper
             phrasetext = phrasetext.replace("hey casper","")
             phrasetext = phrasetext.replace("who casper","")
             phrasetext = phrasetext.replace("her casper","")
             phrasetext = phrasetext.replace("he casper","")
             print("we have a valid question, logging it. Question is:", phrasetext)
-			#valid question asked - save it out for reference
+			      #valid question asked - save it out for reference
             f = open(workingdir+"question.txt", "w")
             f.write(phrasetext)
             f.close()
@@ -208,6 +224,9 @@ def voiceAnswer():
     seconds = seconds + 3
   #now mix
   overlay_words = regular_reverb.overlay(regular, position=0).overlay(regular_upfade, position=0).overlay(regular_downfade, position = 0)
+  #alsa/sd get angry if it's not 48000 and 2 channels. change it here.
+  overlay_words = overlay_words.set_frame_rate(48000)
+  overlay_words = overlay_words.set_channels(2)
   #overlay_words = regular.overlay(regular_upfade, position=0).overlay(regular_downfade, position = 0)
   overlay_words.export(text[2]+text[0], format="wav") 
   questionReceived = False
@@ -221,19 +240,35 @@ def callbackVosk(indata, frames, time, status):
 def playStallResponse():
   #it takes time to create the audio for the answer (2-10 seconds), so say some stall words/play music
   random_file = random.choice(os.listdir(workingdir+'stall/')) #get a random background song
-  stallAudio = AudioSegment.from_file(workingdir+'stall/'+random_file, format="wav")
-  playAudioWithMouth(stallAudio)
+  #stallAudio = AudioSegment.from_file(workingdir+'stall/'+random_file, format="wav")
+  playAudioWithMouth(workingdir+'stall/'+random_file)
 def playMusic():
   while questionReceived == True:
     #play music while we process question
     random_file = random.choice(os.listdir(workingdir+'music/')) #get a random background song
-    stallMusic = AudioSegment.from_file(workingdir+'music/'+random_file, format="wav")
-    play(stallMusic)
-def playAudioWithMouth(segment):
+    #stopped using pydub to play, it didn't play well with alsa when run from cron
+    #stallMusic = AudioSegment.from_file(workingdir+'music/'+random_file, format="wav")
+    #play(stallMusic)
+    #use sounddevice instead
+    data, fs = sf.read(workingdir+'music/'+random_file, dtype='float32')
+    sd.play(data, fs, device=speaker_device)
+    status = sd.wait()
+    if status:
+      parser.exit('Error during playback: ' + str(status))
+def playAudioWithMouth(random_file):
+  print("playing file with light up mouth:",random_file)
   #helper to light up mouth on one thread while playing audio on another
+  segment = AudioSegment.from_file(random_file, format="wav")
   playback_thread = threading.Thread(target=lightMouthFollowingAudioIntensity, args=(segment,)) #start thread to light up mouth LED
   playback_thread.start()
-  play(segment) #actually play audio
+  #got rid of pydub because it didn't play nicely with alsa from cron
+  #play(segment)
+  #use sounddevice instead
+  data, fs = sf.read(random_file)
+  sd.play(data, fs, device=speaker_device)
+  status = sd.wait()
+  if status:
+    parser.exit('Error during playback: ' + str(status))
 def lightMouthFollowingAudioIntensity(segment):
   eyeL1.value = 0.25; eyeR1.value = 0.25; #also turn on eyes while mouth changes intensity
   timer = 0
@@ -295,15 +330,14 @@ def main():
         someonePresent = True #distance sensor sees something close by
         #say hello
         random_file = random.choice(os.listdir(workingdir+'greet/')) #get a random greeting
-        greetingAudio = AudioSegment.from_file(workingdir+'greet/'+random_file, format="wav")
-        playAudioWithMouth(greetingAudio)
+        playAudioWithMouth(workingdir+'greet/'+random_file)
         while someonePresent == True:
           if questionReceived == False and answerReceived == False and responseRead == True:
             print("Turning on ears to listen for question")
             earQuestion()
           if questionReceived == True and answerReceived == False:
-            musicThread = threading.Thread(target=playMusic, args=()) #start background music while we process/play response
-            musicThread.start()
+            #musicThread = threading.Thread(target=playMusic, args=()) #start background music while we process/play response
+            #musicThread.start()
             print("Turning on brain, question received")
             brainAnswer()
           if answerReceived == True:
@@ -318,14 +352,14 @@ def main():
             for t in threads:
               t.join()
             print("playing response")
-            answerAudio = AudioSegment.from_file('answer.wav', format="wav")
-            playAudioWithMouth(answerAudio)
+            #answerAudio = AudioSegment.from_file('answer.wav', format="wav")
+            playAudioWithMouth(workingdir+'answer.wav')
           if int(humanPresence.distance*100) > 170:
             someonePresent = False
         #just detected someonePresent == False, say goodbye
         random_file = random.choice(os.listdir(workingdir+'bye/')) #get a random background song
-        byeAudio = AudioSegment.from_file(workingdir+'bye/'+random_file, format="wav")
-        playAudioWithMouth(byeAudio)
+        #byeAudio = AudioSegment.from_file(workingdir+'bye/'+random_file, format="wav")
+        playAudioWithMouth(workingdir+'bye/'+random_file)
   except KeyboardInterrupt:
     print("\nLeaving program")
 
