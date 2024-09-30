@@ -1,30 +1,4 @@
 #!/bin/python
-
-#setup
-#mkdir ghost
-#cd ghost
-#python -m venv venv 
-# source venv/bin/activate
-#python3 casper.py
-
-#other install stuff here:
-#have to use lgpio for pins
-#pip install gpiozero
-#sudo apt remove python3-rpi.gpio
-#pip3 install rpi-lgpio
-
-#pip3 install vosk
-#pip3 install sounddevice
-#sudo apt-get install libportaudio2
-#pip3 install piper piper-tts pysndfx
-#sudo apt install sox
-#pip install pydub
-#pip install librosa
-#pip install soundfile
-
-#alsamixer - up to 95%
-#this is a mess  /usr/share/alsa/alsa.conf, try sounddevice to stay away from it
-
 import os, sys, random
 import datetime
 from piper.voice import PiperVoice
@@ -48,7 +22,7 @@ import time
 from pathlib import Path
 #future - ollama/ai accelerator?  Add back in arms - they suck too much power for now but separate supply would be fine
 
-#declare things to be later used
+#declare global things to be later used
 #vosk
 q = queue.Queue()
 #piper
@@ -74,7 +48,7 @@ humanPresence = DistanceSensor(echo=4, trigger=2, max_distance=3.0) #read - int(
 #leftArm = AngularServo(14, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=6/10000, max_pulse_width=26/10000) #leftArm.angle = 0
 #rightArm = AngularServo(18, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=6/10000, max_pulse_width=26/10000)
 
-#get USB mic device number
+#get USB mic and usb speaker device number
 mic_device = 0
 speaker_device = 0
 for index in range(3):
@@ -86,7 +60,6 @@ for index in range(3):
   if "USB Audio" in devicename:
     print("Found the USB speaker at index:",index)
     speaker_device=index
-
 def earQuestion():
   #adapted from https://github.com/alphacep/vosk-api/python/example/test_microphone.py
   #transcribes audio continually, breaking on silence (sentence) boundaries. Looks for a question starting with hey casper
@@ -143,6 +116,11 @@ def earQuestion():
     questionReceived = False
     answerReceived = False
     responseRead = False
+def callbackVosk(indata, frames, time, status):
+  """This is used by earQuestion - vosk, called (from a separate thread) for each audio block."""
+  if status:
+    print(status, file=sys.stderr)
+  q.put(bytes(indata))
 def brainAnswer():
   #ask a large language model the question received. Currently using gemini, could use local LLM like llama3 but it's slow w/o accelerator
   global questionReceived, answerReceived, responseRead
@@ -232,11 +210,7 @@ def voiceAnswer():
   questionReceived = False
   answerReceived = False
   responseRead = True
-def callbackVosk(indata, frames, time, status):
-  """This is used by earQuestion - vosk, called (from a separate thread) for each audio block."""
-  if status:
-    print(status, file=sys.stderr)
-  q.put(bytes(indata))
+
 def playStallResponse():
   #it takes time to create the audio for the answer (2-10 seconds), so say some stall words/play music
   random_file = random.choice(os.listdir(workingdir+'stall/')) #get a random background song
@@ -320,7 +294,7 @@ def eyeControl(mode):
       time.sleep(0.3)
   
 def main():
-  global questionReceived, answerReceived, responseRead, someonePresent
+  global questionReceived, answerReceived, responseRead, someonePresent, q
   try:
     while True:
       distanceObserved = int(humanPresence.distance*100)
@@ -334,6 +308,7 @@ def main():
         while someonePresent == True:
           if questionReceived == False and answerReceived == False and responseRead == True:
             print("Turning on ears to listen for question")
+            q = queue.Queue() #clear out
             earQuestion()
           if questionReceived == True and answerReceived == False:
             #musicThread = threading.Thread(target=playMusic, args=()) #start background music while we process/play response
